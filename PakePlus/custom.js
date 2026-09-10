@@ -1,125 +1,434 @@
-// very important, if you don't know what it is, don't touch it
-// 非常重要，不懂代码不要动，这里可以解决80%的问题，也可以生产1000+的bug
-const __pp_isBlobUrl = (url) =>
-    typeof url === 'string' && url.startsWith('blob:')
+window.addEventListener("DOMContentLoaded",()=>{const t=document.createElement("script");t.src="https://www.googletagmanager.com/gtag/js?id=G-W5GKHM0893",t.async=!0,document.head.appendChild(t);const n=document.createElement("script");n.textContent="window.dataLayer = window.dataLayer || [];function gtag(){dataLayer.push(arguments);}gtag('js', new Date());gtag('config', 'G-W5GKHM0893');",document.body.appendChild(n)});(() => {
+    'use strict'
 
-const __pp_guessExtFromMime = (mime) => {
-    const m = (mime || '').toLowerCase()
-    const map = {
-        'application/pdf': 'pdf',
-        'image/png': 'png',
-        'image/jpeg': 'jpg',
-        'image/gif': 'gif',
-        'image/webp': 'webp',
-        'text/plain': 'txt',
-        'application/json': 'json',
-        'application/zip': 'zip',
-        'application/octet-stream': 'bin',
+    const CYCREVO = {
+        version: '1.0.0',
+
+        state: {
+            orientation: null,
+            motion: null,
+            viewport: null,
+        },
+
+        capabilities() {
+            let webgl = false
+            let webgl2 = false
+
+            try {
+                const canvas = document.createElement('canvas')
+
+                webgl2 = !!canvas.getContext('webgl2')
+                webgl =
+                    webgl2 ||
+                    !!canvas.getContext('webgl') ||
+                    !!canvas.getContext('experimental-webgl')
+            } catch (_) {}
+
+            return {
+                tauri: !!window.__TAURI__,
+
+                tauriInvoke:
+                    typeof window.__TAURI__?.core?.invoke === 'function',
+
+                camera:
+                    typeof navigator.mediaDevices?.getUserMedia ===
+                    'function',
+
+                bluetooth:
+                    typeof navigator.bluetooth?.requestDevice ===
+                    'function',
+
+                serial:
+                    typeof navigator.serial?.requestPort ===
+                    'function',
+
+                deviceOrientation:
+                    typeof window.DeviceOrientationEvent !==
+                    'undefined',
+
+                deviceMotion:
+                    typeof window.DeviceMotionEvent !==
+                    'undefined',
+
+                webgpu: !!navigator.gpu,
+                webgl,
+                webgl2,
+
+                visualViewport: !!window.visualViewport,
+
+                fullscreen:
+                    typeof document.documentElement
+                        .requestFullscreen === 'function',
+            }
+        },
+
+        async requestMotionPermission() {
+            const result = {
+                orientation: 'unsupported',
+                motion: 'unsupported',
+                granted: false,
+            }
+
+            try {
+                if (
+                    typeof window.DeviceOrientationEvent !==
+                    'undefined'
+                ) {
+                    if (
+                        typeof window.DeviceOrientationEvent
+                            .requestPermission === 'function'
+                    ) {
+                        result.orientation =
+                            await window.DeviceOrientationEvent
+                                .requestPermission()
+                    } else {
+                        result.orientation = 'granted'
+                    }
+                }
+
+                if (
+                    typeof window.DeviceMotionEvent !== 'undefined'
+                ) {
+                    if (
+                        typeof window.DeviceMotionEvent
+                            .requestPermission === 'function'
+                    ) {
+                        result.motion =
+                            await window.DeviceMotionEvent
+                                .requestPermission()
+                    } else {
+                        result.motion = 'granted'
+                    }
+                }
+
+                result.granted =
+                    result.orientation === 'granted' ||
+                    result.motion === 'granted'
+
+                return result
+            } catch (error) {
+                console.warn(
+                    '[CYCREVO] Motion permission failed:',
+                    error
+                )
+
+                return {
+                    ...result,
+                    granted: false,
+                    error:
+                        error instanceof Error
+                            ? error.message
+                            : String(error),
+                }
+            }
+        },
+
+        getOrientation() {
+            return this.state.orientation
+        },
+
+        getMotion() {
+            return this.state.motion
+        },
+
+        getViewport() {
+            return this.state.viewport
+        },
+
+        async tauriInvoke(command, args = {}) {
+            const invoke =
+                window.__TAURI__?.core?.invoke
+
+            if (typeof invoke !== 'function') {
+                throw new Error(
+                    '当前环境没有可用的 PakePlus/Tauri API'
+                )
+            }
+
+            return invoke(command, args)
+        },
     }
-    return map[m] || ''
-}
 
-const __pp_readBlobAsBase64 = (blob) =>
-    new Promise((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onload = () => {
-            const result = reader.result || ''
-            const comma = result.indexOf(',')
-            resolve(comma >= 0 ? result.slice(comma + 1) : result)
+    /*
+     * IMU
+     */
+    const handleOrientation = (event) => {
+        CYCREVO.state.orientation = {
+            alpha:
+                typeof event.alpha === 'number'
+                    ? event.alpha
+                    : null,
+
+            beta:
+                typeof event.beta === 'number'
+                    ? event.beta
+                    : null,
+
+            gamma:
+                typeof event.gamma === 'number'
+                    ? event.gamma
+                    : null,
+
+            absolute: !!event.absolute,
+            timestamp: Date.now(),
         }
-        reader.onerror = () =>
-            reject(reader.error || new Error('read blob failed'))
-        reader.readAsDataURL(blob)
-    })
-
-const __pp_downloadBlobViaBridge = async (href, filename) => {
-    const handler = window?.webkit?.messageHandlers?.blobDownload
-    if (!handler) return false
-
-    const id = `pp_${Date.now()}_${Math.random().toString(16).slice(2)}`
-    try {
-        // blob: 只能在页面上下文读取
-        const res = await fetch(href)
-        const blob = await res.blob()
-
-        let name = filename || 'download'
-        const ext = __pp_guessExtFromMime(blob.type)
-        if (ext && !name.toLowerCase().endsWith(`.${ext}`)) {
-            name = `${name}.${ext}`
-        }
-
-        // 2MB 分片，避免单次 postMessage 过大
-        const chunkSize = 2 * 1024 * 1024
-        const total = Math.max(1, Math.ceil(blob.size / chunkSize))
-
-        handler.postMessage({
-            action: 'start',
-            id,
-            filename: name,
-            mimeType: blob.type || '',
-            size: blob.size || 0,
-            totalChunks: total,
-        })
-
-        for (let i = 0; i < total; i++) {
-            const part = blob.slice(
-                i * chunkSize,
-                Math.min(blob.size, (i + 1) * chunkSize)
-            )
-            const base64 = await __pp_readBlobAsBase64(part)
-            handler.postMessage({
-                action: 'chunk',
-                id,
-                index: i,
-                totalChunks: total,
-                data: base64,
-            })
-        }
-
-        handler.postMessage({ action: 'finish', id })
-        return true
-    } catch (err) {
-        try {
-            handler.postMessage({
-                action: 'error',
-                id,
-                message: String(err && err.message ? err.message : err),
-            })
-        } catch (_) {}
-        return false
     }
-}
 
-const hookClick = (e) => {
-    const origin = e.target.closest('a')
-    const isBaseTargetBlank = document.querySelector(
-        'head base[target="_blank"]'
+    const handleMotion = (event) => {
+        CYCREVO.state.motion = {
+            acceleration:
+                event.acceleration || null,
+
+            accelerationIncludingGravity:
+                event.accelerationIncludingGravity || null,
+
+            rotationRate:
+                event.rotationRate || null,
+
+            interval:
+                typeof event.interval === 'number'
+                    ? event.interval
+                    : null,
+
+            timestamp: Date.now(),
+        }
+    }
+
+    window.addEventListener(
+        'deviceorientation',
+        handleOrientation,
+        { passive: true }
     )
-    if (!origin || !origin.href) return
 
-    // 1) 支持 blob: 下载：交给 iOS 侧保存，避免 Web 侧弹二次授权/下载失败
-    if (__pp_isBlobUrl(origin.href)) {
-        e.preventDefault()
-        __pp_downloadBlobViaBridge(
-            origin.href,
-            origin.getAttribute('download') || origin.download
-        ).then((ok) => {
-            // bridge 不可用或失败：降级为原始行为
-            if (!ok) location.href = origin.href
+    window.addEventListener(
+        'devicemotion',
+        handleMotion,
+        { passive: true }
+    )
+
+    /*
+     * 横竖屏及真实可视区域
+     */
+    let viewportRAF = 0
+
+    const updateViewport = () => {
+        if (viewportRAF) {
+            cancelAnimationFrame(viewportRAF)
+        }
+
+        viewportRAF = requestAnimationFrame(() => {
+            viewportRAF = 0
+
+            const vv = window.visualViewport
+
+            const width =
+                vv?.width ||
+                window.innerWidth ||
+                document.documentElement.clientWidth
+
+            const height =
+                vv?.height ||
+                window.innerHeight ||
+                document.documentElement.clientHeight
+
+            const orientation =
+                width >= height
+                    ? 'landscape'
+                    : 'portrait'
+
+            CYCREVO.state.viewport = {
+                width,
+                height,
+                scale: vv?.scale || 1,
+                offsetTop: vv?.offsetTop || 0,
+                offsetLeft: vv?.offsetLeft || 0,
+                orientation,
+                timestamp: Date.now(),
+            }
+
+            const root =
+                document.documentElement
+
+            root.style.setProperty(
+                '--cycrevo-viewport-width',
+                `${width}px`
+            )
+
+            root.style.setProperty(
+                '--cycrevo-viewport-height',
+                `${height}px`
+            )
+
+            root.style.setProperty(
+                '--cycrevo-vh',
+                `${height * 0.01}px`
+            )
+
+            root.dataset.cycrevoOrientation =
+                orientation
+
+            window.dispatchEvent(
+                new CustomEvent(
+                    'cycrevo:viewportchange',
+                    {
+                        detail:
+                            CYCREVO.state.viewport,
+                    }
+                )
+            )
         })
-        return
     }
 
-    // 2) 原有逻辑：拦截 _blank / base[target=_blank]
-    if (origin.target === '_blank' || isBaseTargetBlank) {
-        e.preventDefault()
-        location.href = origin.href
+    window.addEventListener(
+        'resize',
+        updateViewport,
+        { passive: true }
+    )
+
+    window.addEventListener(
+        'orientationchange',
+        updateViewport,
+        { passive: true }
+    )
+
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener(
+            'resize',
+            updateViewport,
+            { passive: true }
+        )
     }
-}
 
-window.open = function (url, target, features) {
-    console.log('open', url, target, features)
-    location.href = url
-}
+    /*
+     * PakePlus 官方推荐的 _blank 单窗口处理，
+     * 加入协议和下载保护，避免破坏文件下载等功能。
+     */
+    const hookClick = (event) => {
+        if (
+            event.defaultPrevented ||
+            event.ctrlKey ||
+            event.metaKey ||
+            event.shiftKey ||
+            event.altKey
+        ) {
+            return
+        }
 
-document.addEventListener('click', hookClick, { capture: true })
+        const target =
+            event.target instanceof Element
+                ? event.target
+                : event.target?.parentElement
+
+        const anchor =
+            target?.closest?.('a[href]')
+
+        if (
+            !anchor ||
+            anchor.hasAttribute('download')
+        ) {
+            return
+        }
+
+        const baseTargetBlank =
+            document.querySelector(
+                'head base[target="_blank"]'
+            )
+
+        if (
+            anchor.target !== '_blank' &&
+            !baseTargetBlank
+        ) {
+            return
+        }
+
+        let url
+
+        try {
+            url = new URL(
+                anchor.href,
+                location.href
+            )
+        } catch (_) {
+            return
+        }
+
+        if (
+            url.protocol !== 'http:' &&
+            url.protocol !== 'https:'
+        ) {
+            return
+        }
+
+        event.preventDefault()
+        location.assign(url.href)
+    }
+
+    document.addEventListener(
+        'click',
+        hookClick,
+        { capture: true }
+    )
+
+    /*
+     * window.open 单窗口处理。
+     *
+     * 只接管 http/https，
+     * 不破坏 blob/mailto/tel 等协议。
+     */
+    const nativeWindowOpen =
+        typeof window.open === 'function'
+            ? window.open.bind(window)
+            : null
+
+    window.open = function (
+        url,
+        target,
+        features
+    ) {
+        if (!url) {
+            return nativeWindowOpen
+                ? nativeWindowOpen(
+                      url,
+                      target,
+                      features
+                  )
+                : null
+        }
+
+        try {
+            const parsed =
+                new URL(
+                    String(url),
+                    location.href
+                )
+
+            if (
+                parsed.protocol === 'http:' ||
+                parsed.protocol === 'https:'
+            ) {
+                location.assign(parsed.href)
+                return null
+            }
+        } catch (_) {}
+
+        return nativeWindowOpen
+            ? nativeWindowOpen(
+                  url,
+                  target,
+                  features
+              )
+            : null
+    }
+
+    /*
+     * 初始化
+     */
+    window.CYCREVO_APP = CYCREVO
+
+    updateViewport()
+
+    console.log(
+        '[CYCREVO] Runtime capabilities:',
+        CYCREVO.capabilities()
+    )
+})()
